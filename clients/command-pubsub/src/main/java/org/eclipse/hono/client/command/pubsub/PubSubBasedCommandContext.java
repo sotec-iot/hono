@@ -70,7 +70,7 @@ public class PubSubBasedCommandContext extends AbstractCommandContext<PubSubBase
             final String correlationId = getCorrelationId();
             sendDeliveryFailureCommandResponseMessage(status, errorMessage, span, error, correlationId,
                     MessagingType.pubsub)
-                            .onComplete(v -> span.finish());
+                    .onComplete(v -> span.finish());
         } else {
             span.finish();
         }
@@ -117,7 +117,7 @@ public class PubSubBasedCommandContext extends AbstractCommandContext<PubSubBase
             final String correlationId = getCorrelationId();
             sendDeliveryFailureCommandResponseMessage(status, nonNullCause, span, null, correlationId,
                     MessagingType.pubsub)
-                            .onComplete(v -> span.finish());
+                    .onComplete(v -> span.finish());
         } else {
             span.finish();
         }

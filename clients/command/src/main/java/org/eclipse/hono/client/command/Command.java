@@ -36,6 +36,13 @@ public interface Command {
     boolean isOneWay();
 
     /**
+     * Checks if an acknowledgement of this command should be sent to the messaging infrastructure.
+     *
+     * @return {@code true} if an acknowledgement is required.
+     */
+    boolean isAckRequired();
+
+    /**
      * Checks if this command contains all required information.
      *
      * @return {@code true} if this is a valid command.

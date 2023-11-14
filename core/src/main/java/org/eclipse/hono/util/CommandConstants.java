@@ -77,6 +77,11 @@ public class CommandConstants {
     public static final String COMMAND_RESPONSE_RESPONSE_PART_SHORT = "s";
 
     /**
+     * The content type that is defined for acknowledgement command response messages sent by a protocol adapter or Command Router.
+     */
+    public static final String CONTENT_TYPE_DELIVERY_SUCCESS_NOTIFICATION = "application/vnd.eclipse-hono-delivery-success-notification+json";
+
+    /**
      * The content type that is defined for error command response messages sent by a protocol adapter or Command Router.
      */
     public static final String CONTENT_TYPE_DELIVERY_FAILURE_NOTIFICATION = "application/vnd.eclipse-hono-delivery-failure-notification+json";

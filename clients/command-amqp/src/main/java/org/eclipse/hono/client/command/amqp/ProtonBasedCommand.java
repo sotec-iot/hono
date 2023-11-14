@@ -194,6 +194,11 @@ public final class ProtonBasedCommand implements Command {
     }
 
     @Override
+    public boolean isAckRequired() {
+        return false;
+    }
+
+    @Override
     public boolean isValid() {
         return !validationError.isPresent();
     }
