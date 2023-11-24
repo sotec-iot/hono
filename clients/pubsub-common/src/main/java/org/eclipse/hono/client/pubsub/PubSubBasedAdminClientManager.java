@@ -14,7 +14,11 @@
 package org.eclipse.hono.client.pubsub;
 
 import java.io.IOException;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import org.slf4j.Logger;
@@ -24,11 +28,14 @@ import com.google.api.gax.core.CredentialsProvider;
 import com.google.api.gax.rpc.ApiException;
 import com.google.api.gax.rpc.NotFoundException;
 import com.google.cloud.pubsub.v1.SubscriptionAdminClient;
+import com.google.cloud.pubsub.v1.SubscriptionAdminClient.ListSubscriptionsPagedResponse;
 import com.google.cloud.pubsub.v1.SubscriptionAdminSettings;
 import com.google.cloud.pubsub.v1.TopicAdminClient;
+import com.google.cloud.pubsub.v1.TopicAdminClient.ListTopicsPagedResponse;
 import com.google.cloud.pubsub.v1.TopicAdminSettings;
 import com.google.protobuf.util.Durations;
 import com.google.pubsub.v1.ExpirationPolicy;
+import com.google.pubsub.v1.ProjectName;
 import com.google.pubsub.v1.PushConfig;
 import com.google.pubsub.v1.Subscription;
 import com.google.pubsub.v1.SubscriptionName;
@@ -36,6 +43,7 @@ import com.google.pubsub.v1.Topic;
 import com.google.pubsub.v1.TopicName;
 
 import io.vertx.core.Future;
+import io.vertx.core.Promise;
 import io.vertx.core.Vertx;
 
 /**
@@ -217,6 +225,103 @@ public class PubSubBasedAdminClientManager {
                         thr -> LOG.debug("Creating subscription failed [subscription: {}, topic: {}, project: {}]",
                                 subscriptionName, topicName, projectId));
         return createdSubscription;
+    }
+
+    /**
+     * Lists subscriptions and adds its names in a set.
+     *
+     * @return A future containing a set of subscription names.
+     */
+    public Future<Set<String>> listSubscriptions() {
+        return getOrCreateSubscriptionAdminClient()
+                .onFailure(thr -> LOG.error("admin client creation failed", thr))
+                .recover(Future::failedFuture)
+                .compose(client -> {
+                    final Promise<Set<String>> result = Promise.promise();
+                    final Set<String> allSubscriptions = new HashSet<>();
+                    final ProjectName projectName = ProjectName.of(projectId);
+                    try {
+                        final ListSubscriptionsPagedResponse pagedResponse = client.listSubscriptions(
+                                projectName);
+                        Optional.ofNullable(pagedResponse)
+                                .ifPresent(p -> p.iterateAll().forEach(s -> allSubscriptions.add(s.getName())));
+                        result.complete(allSubscriptions);
+                        return result.future();
+                    } catch (Exception e) {
+                        LOG.error("Error listing subscriptions on project {}", projectId, e);
+                        return Future.failedFuture("Error listing subscriptions");
+                    }
+                });
+    }
+
+    /**
+     * Lists topics and adds its names in a set.
+     *
+     * @return A future containing a set of topic names.
+     */
+    public Future<Set<String>> listTopics() {
+        return getOrCreateTopicAdminClient()
+                .onFailure(thr -> LOG.error("admin client creation failed", thr))
+                .recover(Future::failedFuture)
+                .compose(client -> {
+                    final Promise<Set<String>> result = Promise.promise();
+                    final Set<String> allTopics = new HashSet<>();
+                    final ProjectName projectName = ProjectName.of(projectId);
+                    try {
+                        final ListTopicsPagedResponse pagedResponse = client.listTopics(projectName);
+                        Optional.ofNullable(pagedResponse)
+                                .ifPresent(p -> pagedResponse.iterateAll().forEach(t -> allTopics.add(t.getName())));
+                        result.complete(allTopics);
+                        return result.future();
+                    } catch (Exception e) {
+                        LOG.error("Error listing topics on project {}", projectId, e);
+                        return Future.failedFuture("Error listing topics");
+                    }
+                });
+    }
+
+    /**
+     * Deletes the topics with the provided names in the list.
+     *
+     * @param topicsToDelete A list containing the topic names that should be deleted. The list must contain topics with
+     *            the format `"projects/{project}/topics/{topic}"`
+     * @return A succeeded future if the topics could be deleted successfully, a failed future if an error occurs.
+     */
+    public Future<Void> deleteTopics(final List<String> topicsToDelete) {
+        final Promise<Void> result = Promise.promise();
+        for (final String topic : topicsToDelete) {
+            try {
+                topicAdminClient.deleteTopic(topic);
+            } catch (ApiException e) {
+                LOG.warn("Could not delete topic {}", topic, e);
+                result.fail(e);
+                return result.future();
+            }
+        }
+        result.complete();
+        return result.future();
+    }
+
+    /**
+     * Deletes the subscriptions with the provided names in the list.
+     *
+     * @param subscriptionsToDelete A list containing the subscription names that should be deleted. The list must
+     *            contain subscriptions with the format `"projects/{project}/subscriptions/{subscription}"`
+     * @return A succeeded future if the subscriptions could be deleted successfully, a failed future if an error occurs.
+     */
+    public Future<Void> deleteSubscriptions(final List<String> subscriptionsToDelete) {
+        final Promise<Void> result = Promise.promise();
+        for (final String subscription : subscriptionsToDelete) {
+            try {
+                subscriptionAdminClient.deleteSubscription(subscription);
+            } catch (ApiException e) {
+                LOG.warn("Could not delete subscription {}", subscription, e);
+                result.fail(e);
+                return result.future();
+            }
+        }
+        result.complete();
+        return result.future();
     }
 
     /**

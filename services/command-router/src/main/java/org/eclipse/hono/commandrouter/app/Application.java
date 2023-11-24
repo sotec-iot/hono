@@ -58,6 +58,7 @@ import org.eclipse.hono.commandrouter.impl.UnknownStatusProvidingService;
 import org.eclipse.hono.commandrouter.impl.amqp.ProtonBasedCommandConsumerFactoryImpl;
 import org.eclipse.hono.commandrouter.impl.kafka.InternalKafkaTopicCleanupService;
 import org.eclipse.hono.commandrouter.impl.kafka.KafkaBasedCommandConsumerFactoryImpl;
+import org.eclipse.hono.commandrouter.impl.pubsub.InternalPubSubTopicCleanupService;
 import org.eclipse.hono.commandrouter.impl.pubsub.PubSubBasedCommandConsumerFactoryImpl;
 import org.eclipse.hono.config.ServiceConfigProperties;
 import org.eclipse.hono.config.ServiceOptions;
@@ -77,6 +78,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.github.benmanes.caffeine.cache.Cache;
+import com.google.api.gax.core.CredentialsProvider;
+import com.google.api.gax.core.FixedCredentialsProvider;
 
 import io.smallrye.config.ConfigMapping;
 import io.smallrye.health.api.HealthRegistry;
@@ -305,11 +308,22 @@ public class Application extends NotificationSupportingServiceApplication {
                         }))
                 .orElse(Future.succeededFuture());
 
+        // deploy Pub/Sub topic clean-up service (once only)
+        final Future<String> pubsubTopicCleanUpServiceDeploymentTracker = createPubSubTopicCleanUpService()
+                .map(service -> vertx.deployVerticle(service)
+                        .onSuccess(ok -> {
+                            LOG.info("successfully deployed Pub/Sub topic clean-up service verticle");
+                            deploymentResult.put("Pub/Sub topic clean-up service verticle", "successfully deployed");
+                            readinessChecks.register(service::checkReadiness);
+                        }))
+                .orElse(Future.succeededFuture());
+
         Future.all(
                 authServiceDeploymentTracker,
                 amqpServerDeploymentTracker,
                 notificationReceiverTracker,
-                topicCleanUpServiceDeploymentTracker)
+                topicCleanUpServiceDeploymentTracker,
+                pubsubTopicCleanUpServiceDeploymentTracker)
             .map(deploymentResult)
             .onComplete(deploymentCheck);
     }
@@ -371,6 +385,22 @@ public class Application extends NotificationSupportingServiceApplication {
             return Optional.of(new InternalKafkaTopicCleanupService(
                     adapterInstanceStatusService,
                     kafkaAdminClientConfig));
+        } else {
+            return Optional.empty();
+        }
+    }
+
+    private Optional<InternalPubSubTopicCleanupService> createPubSubTopicCleanUpService() {
+        final Optional<CredentialsProvider> credentialsProvider = PubSubMessageHelper.getCredentialsProvider();
+        if (!appConfig.isPubSubMessagingDisabled()
+                && pubSubConfigProperties.isProjectIdConfigured()
+                && credentialsProvider.isPresent()
+                && !(adapterInstanceStatusService instanceof UnknownStatusProvidingService)) {
+            return Optional.of(new InternalPubSubTopicCleanupService(
+                    adapterInstanceStatusService,
+                    pubSubConfigProperties,
+                    (FixedCredentialsProvider) credentialsProvider.get(),
+                    vertx));
         } else {
             return Optional.empty();
         }
