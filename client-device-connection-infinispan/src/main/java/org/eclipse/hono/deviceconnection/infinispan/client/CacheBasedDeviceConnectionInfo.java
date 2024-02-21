@@ -1,5 +1,5 @@
 /**
- * Copyright (c) 2020, 2023 Contributors to the Eclipse Foundation
+ * Copyright (c) 2020, 2024 Contributors to the Eclipse Foundation
  *
  * See the NOTICE file(s) distributed with this work for additional
  * information regarding copyright ownership.
@@ -16,6 +16,7 @@ package org.eclipse.hono.deviceconnection.infinispan.client;
 import java.net.HttpURLConnection;
 import java.time.Duration;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -212,9 +213,8 @@ public final class CacheBasedDeviceConnectionInfo implements DeviceConnectionInf
         Objects.requireNonNull(span);
 
         // sanity check, preventing an ArithmeticException in lifespan.toMillis()
-        final long lifespanMillis = lifespan == null || lifespan.isNegative()
-                || lifespan.getSeconds() > (Long.MAX_VALUE / 1000L) ? -1 : lifespan.toMillis();
-        return cache.put(getAdapterInstanceEntryKey(tenantId, deviceId), adapterInstanceId, lifespanMillis, TimeUnit.MILLISECONDS)
+        final long lifespanMillis = -1;
+        return addToCache(getAdapterInstanceEntryKey(tenantId, deviceId), adapterInstanceId, lifespanMillis, TimeUnit.MILLISECONDS)
                 .onSuccess(ok -> LOG.debug(
                         "set command handling adapter instance [tenant: {}, device-id: {}, adapter-instance: {}, lifespan: {}ms]",
                         tenantId, deviceId, adapterInstanceId, lifespanMillis))
@@ -223,6 +223,26 @@ public final class CacheBasedDeviceConnectionInfo implements DeviceConnectionInf
                             tenantId, deviceId, adapterInstanceId, lifespanMillis, t);
                     TracingHelper.logError(span, "failed to set command handling adapter instance cache entry", t);
                     throw new ServerErrorException(tenantId, HttpURLConnection.HTTP_INTERNAL_ERROR, t);
+                });
+    }
+
+    private Future<Void> addToCache(final String entryKey, final String adapterInstanceId, final long lifespanMillis, final TimeUnit timeUnit) {
+        final Future<String> cacheFuture = cache.get(entryKey);
+        return cacheFuture
+                .compose(entry -> {
+                    if (!entry.contains(adapterInstanceId)) {
+                        LOG.debug("addToCache: entry does not contain adapterInstanceId {}: {}", adapterInstanceId, entry);
+                        final Future<Void> future = cache.put(entryKey, entry + ";" + adapterInstanceId, lifespanMillis, timeUnit);
+                        LOG.debug("addToCache: entry now contains adapterInstanceId {}: {}", adapterInstanceId, cacheFuture);
+                        return future;
+                    }
+                    return Future.succeededFuture();
+                })
+                .recover(t -> {
+                    LOG.debug("addToCache: entry was not found. Create new one.");
+                    final Future<Void> future = cache.put(entryKey, adapterInstanceId, lifespanMillis, timeUnit);
+                    LOG.debug("addToCache: new entry with adapterInstanceId {}: {}", adapterInstanceId, cacheFuture);
+                    return future;
                 });
     }
 
@@ -238,24 +258,82 @@ public final class CacheBasedDeviceConnectionInfo implements DeviceConnectionInf
         Objects.requireNonNull(adapterInstanceId);
         Objects.requireNonNull(span);
 
-        return cache
-                .remove(getAdapterInstanceEntryKey(tenantId, deviceId), adapterInstanceId)
-                .otherwise(t -> {
-                    LOG.debug("failed to remove the cache entry for the command handling adapter instance [tenant: {}, device-id: {}, adapter-instance: {}]",
-                            tenantId, deviceId, adapterInstanceId, t);
-                    TracingHelper.logError(span, "failed to remove cache entry for the command handling adapter instance", t);
-                    throw new ServerErrorException(tenantId, HttpURLConnection.HTTP_INTERNAL_ERROR, t);
-                })
-                .compose(removed -> {
-                    if (!removed) {
-                        LOG.debug("command handling adapter instance was not removed, key not mapped or value didn't match [tenant: {}, device-id: {}, adapter-instance: {}]",
-                                tenantId, deviceId, adapterInstanceId);
-                        return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_PRECON_FAILED));
-                    } else {
-                        LOG.debug("removed command handling adapter instance [tenant: {}, device-id: {}, adapter-instance: {}]",
-                                tenantId, deviceId, adapterInstanceId);
+        return cache.get(getAdapterInstanceEntryKey(tenantId, deviceId))
+                .recover(t -> failedToGetEntriesWhenGettingInstances(tenantId, deviceId, t, span))
+                .compose(adapters -> {
+                    LOG.debug("removeCommandHandlingAdapterInstance: adapters before remove: {}", adapters);
+                    if (adapters == null) {
+                        LOG.debug("removeCommandHandlingAdapterInstance: adapters was null. Did nothing");
                         return Future.succeededFuture();
                     }
+                    return removeAdapterInstanceFromCacheEntry(adapters, adapterInstanceId, tenantId, deviceId, span);
+                });
+    }
+
+    /**
+     * Removes the given adapter instance from the cache for the given device.
+     *
+     * @param adapters The adapter instances for the given device
+     * @param adapterInstanceId The adapter instance to remove
+     * @param tenantId The tenant ID of the device
+     * @param deviceId The device ID
+     * @param span The active OpenTracing span for this operation
+     * @return A future indicating the outcome of the operation.
+     *         <p>
+     *         The future will be succeeded if the entry was successfully removed.
+     *         Otherwise the future will be failed with a {@link org.eclipse.hono.client.ServiceInvocationException}.
+
+     */
+    protected Future<Void> removeAdapterInstanceFromCacheEntry(final String adapters, final String adapterInstanceId,
+                                                             final String tenantId, final String deviceId, final Span span) {
+        final List<String> adapterCollection = Arrays.stream(adapters.split(";"))
+            .toList();
+        final StringBuilder stringBuilder = new StringBuilder();
+        for (String adapter : adapterCollection) {
+            if (!adapter.equalsIgnoreCase(adapterInstanceId)) {
+                stringBuilder.append(adapter);
+                stringBuilder.append(";");
+            }
+        }
+        if (stringBuilder.toString().endsWith(";")) {
+            stringBuilder.deleteCharAt(stringBuilder.lastIndexOf(";"));
+        }
+
+        final String adapterInstanceIds = stringBuilder.toString();
+        LOG.debug("tenant {} device {} adapters after remove: {}", tenantId, deviceId, adapterInstanceIds);
+
+        // remove cache entry if adapterInstanceIds is empty
+        if (adapterInstanceIds.isEmpty()) {
+            return cache
+                    .remove(getAdapterInstanceEntryKey(tenantId, deviceId), adapterInstanceId)
+                    .otherwise(t -> {
+                        LOG.debug("failed to remove the cache entry for the command handling adapter instance [tenant: {}, device-id: {}, adapter-instance: {}]",
+                                tenantId, deviceId, adapterInstanceId, t);
+                        TracingHelper.logError(span, "failed to remove cache entry for the command handling adapter instance", t);
+                        throw new ServerErrorException(tenantId, HttpURLConnection.HTTP_INTERNAL_ERROR, t);
+                    })
+                    .compose(removed -> {
+                        if (!removed) {
+                            LOG.debug("command handling adapter instance was not removed, key not mapped or value didn't match [tenant: {}, device-id: {}, adapter-instance: {}]",
+                                    tenantId, deviceId, adapterInstanceId);
+                            return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_PRECON_FAILED));
+                        } else {
+                            LOG.debug("removed command handling adapter instance [tenant: {}, device-id: {}, adapter-instance: {}]",
+                                    tenantId, deviceId, adapterInstanceId);
+                            return Future.succeededFuture();
+                        }
+                    });
+        }
+
+        // update cache entry
+        return cache.put(getAdapterInstanceEntryKey(tenantId, deviceId), adapterInstanceIds, -1L, TimeUnit.MILLISECONDS)
+                .onSuccess(ok -> LOG.debug("set adapterInstances [tenant: {}, device-id: {}, adapterInstances: {}]",
+                        tenantId, deviceId, adapterInstanceIds))
+                .otherwise(t -> {
+                    LOG.debug("failed to set adapterInstances [tenant: {}, device-id: {}, adapterInstances: {}]",
+                            tenantId, deviceId, adapterInstanceIds, t);
+                    TracingHelper.logError(span, "failed to set last known gateway", t);
+                    throw new ServerErrorException(tenantId, HttpURLConnection.HTTP_INTERNAL_ERROR, t);
                 });
 
     }
@@ -277,19 +355,44 @@ public final class CacheBasedDeviceConnectionInfo implements DeviceConnectionInf
             // get the command handling adapter instance for the device (no gateway involved)
             resultFuture = cache.get(getAdapterInstanceEntryKey(tenantId, deviceId))
                     .recover(t -> failedToGetEntriesWhenGettingInstances(tenantId, deviceId, t, span))
-                    .compose(adapterInstanceId -> checkAdapterInstanceId(adapterInstanceId, tenantId, deviceId, span))
                     .compose(adapterInstanceId -> {
                         if (adapterInstanceId == null) {
                             LOG.debug("no command handling adapter instances found [tenant: {}, device-id: {}]",
                                     tenantId, deviceId);
                             span.log("no command handling adapter instances found for device (no via-gateways given)");
                             return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_NOT_FOUND));
+                        }
+                        final List<String> adapterInstanceIds = new ArrayList<>();
+                        LOG.debug("getCommandHandlingAdapterInstances adapterInstanceId after cache get: {}", adapterInstanceId);
+                        if (adapterInstanceId.contains(";")) {
+                             adapterInstanceIds.addAll(Arrays.stream(adapterInstanceId.split(";")).toList());
                         } else {
-                            LOG.debug("found command handling adapter instance '{}' [tenant: {}, device-id: {}]",
-                                    adapterInstanceId, tenantId, deviceId);
+                            adapterInstanceIds.add(adapterInstanceId);
+                        }
+                        LOG.debug("getCommandHandlingAdapterInstances adapterInstanceIds after composing: {}", adapterInstanceIds.stream().map(String::valueOf).collect(Collectors.joining(", ", "{", "}")));
+                        return Future.succeededFuture(adapterInstanceIds);
+                    })
+                    .compose(adapterInstanceIds -> {
+                        final List<Future<String>> futures = new ArrayList<>();
+                        for (String adapterInstanceId : adapterInstanceIds) {
+                            futures.add(checkAdapterInstanceId(adapterInstanceId, tenantId, deviceId, span));
+                        }
+                        return Future.join(futures);
+                    })
+                    .compose(compositeFuture -> {
+                        final HashSet<String> adapterInstanceIds = new HashSet<>(compositeFuture.list());
+                        adapterInstanceIds.remove(null);
+                        if (adapterInstanceIds.isEmpty()) {
+                            LOG.debug("no command handling adapter instances found [tenant: {}, device-id: {}]",
+                                    tenantId, deviceId);
+                            span.log("no command handling adapter instances found for device (no via-gateways given)");
+                            return Future.failedFuture(new ClientErrorException(HttpURLConnection.HTTP_NOT_FOUND));
+                        } else {
+                            LOG.debug("found command handling adapter instance(s) '{}' [tenant: {}, device-id: {}]",
+                                    adapterInstanceIds, tenantId, deviceId);
                             span.log("returning command handling adapter instance for device itself");
-                            setTagsForSingleResult(span, adapterInstanceId);
-                            return Future.succeededFuture(getAdapterInstancesResultJson(deviceId, adapterInstanceId));
+                            setTagsForSingleResult(span, String.valueOf(adapterInstanceIds));
+                            return Future.succeededFuture(getAdapterInstancesResultJson(deviceId, adapterInstanceIds));
                         }
                     });
         } else if (viaGateways.size() <= VIA_GATEWAYS_OPTIMIZATION_THRESHOLD) {
@@ -561,6 +664,20 @@ public final class CacheBasedDeviceConnectionInfo implements DeviceConnectionInf
         return getAdapterInstancesResultJson(Map.of(deviceId, adapterInstanceId));
     }
 
+    private static JsonObject getAdapterInstancesResultJson(final String deviceId, final Set<String> adapterInstanceIds) {
+        final JsonObject jsonObject = new JsonObject();
+        final JsonArray adapterInstancesArray = new JsonArray(new ArrayList<>(adapterInstanceIds.size()));
+        for (String adapterInstanceId : adapterInstanceIds) {
+            final JsonObject entryJson = new JsonObject();
+            entryJson.put(RequestResponseApiConstants.FIELD_PAYLOAD_DEVICE_ID, deviceId);
+            entryJson.put(DeviceConnectionConstants.FIELD_ADAPTER_INSTANCE_ID, adapterInstanceId);
+            adapterInstancesArray.add(entryJson);
+        }
+        jsonObject.put(DeviceConnectionConstants.FIELD_ADAPTER_INSTANCES, adapterInstancesArray);
+        LOG.debug("AdapterInstanceJSON: {}", jsonObject);
+        return jsonObject;
+    }
+
     private Future<Map<String, String>> checkAdapterInstanceIds(final String tenantId,
             final Map<String, String> deviceToInstanceIdMap, final Span span) {
 
@@ -610,24 +727,40 @@ public final class CacheBasedDeviceConnectionInfo implements DeviceConnectionInf
                                         adapterInstanceId, tenantId, deviceId);
                             }
                         })
-                        .onFailure(thr -> LOG.debug(
-                                "error calling listener for obsolete adapter instance id '{}' [tenant: {}, device-id: {}]",
-                                adapterInstanceId, tenantId, deviceId, thr)
-                        )
-                        .compose(s -> cache.remove(getAdapterInstanceEntryKey(tenantId, deviceId), adapterInstanceId)
-                                .onSuccess(removed -> {
-                                    if (removed) {
-                                        LOG.debug(
-                                                "removed entry with obsolete adapter instance id '{}' [tenant: {}, device-id: {}]",
-                                                adapterInstanceId, tenantId, deviceId);
+                        .onFailure(thr -> {
+                            LOG.debug(
+                                    "error calling listener for obsolete adapter instance id '{}' [tenant: {}, device-id: {}]",
+                                    adapterInstanceId, tenantId, deviceId, thr);
+                        })
+                        .compose(s -> {
+                            return cache.get(getAdapterInstanceEntryKey(tenantId, deviceId))
+                                .recover(t -> failedToGetEntriesWhenGettingInstances(tenantId, deviceId, t, span))
+                                .compose(adapters -> {
+                                    LOG.debug("checkAdapterInstanceId adapters before remove: {}", adapters);
+                                    if (adapters.contains(";")) {
+                                        removeAdapterInstanceFromCacheEntry(adapters, adapterInstanceId, tenantId, deviceId, span);
+                                        return Future.succeededFuture();
+                                    } else {
+                                        return cache.remove(getAdapterInstanceEntryKey(tenantId, deviceId), adapterInstanceId)
+                                            .onSuccess(removed -> {
+                                                if (removed) {
+                                                    LOG.debug(
+                                                        "removed entry with obsolete adapter instance id '{}' [tenant: {}, device-id: {}]",
+                                                        adapterInstanceId, tenantId, deviceId);
+                                                }
+                                            })
+                                            .onFailure(thr -> {
+                                                LOG.debug(
+                                                    "error removing entry with obsolete adapter instance id '{}' [tenant: {}, device-id: {}]",
+                                                    adapterInstanceId, tenantId, deviceId, thr);
+                                            });
                                     }
-                                })
-                                .onFailure(thr -> LOG.debug(
-                                        "error removing entry with obsolete adapter instance id '{}' [tenant: {}, device-id: {}]",
-                                        adapterInstanceId, tenantId, deviceId, thr)))
-                        .recover(thr ->
+                                });
+                        })
+                        .recover(thr -> {
                             // errors treated as not found adapter instance
-                            Future.succeededFuture())
+                            return Future.succeededFuture();
+                        })
                         .mapEmpty();
             } else if (status == AdapterInstanceStatus.SUSPECTED_DEAD) {
                 LOG.debug(

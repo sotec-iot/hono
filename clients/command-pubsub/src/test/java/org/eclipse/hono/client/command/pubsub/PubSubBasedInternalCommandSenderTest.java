@@ -29,6 +29,7 @@ import org.eclipse.hono.client.pubsub.publisher.PubSubPublisherClient;
 import org.eclipse.hono.client.pubsub.publisher.PubSubPublisherFactory;
 import org.eclipse.hono.test.TracingMockSupport;
 import org.eclipse.hono.util.CommandConstants;
+import org.eclipse.hono.util.DeviceConnectionConstants;
 import org.eclipse.hono.util.MessageHelper;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -49,6 +50,8 @@ public class PubSubBasedInternalCommandSenderTest {
 
     private final String tenantId = "test-tenant";
 
+    private final String adapterInstanceIdJson = String.format("{\"%s\":[{\"device-id\":\"%s\",\"adapter-instance-id\":\"%s\"}]}", DeviceConnectionConstants.FIELD_ADAPTER_INSTANCES, deviceId, adapterInstanceId);
+
     private PubSubPublisherFactory factory;
 
     private PubSubBasedInternalCommandSender internalCommandSender;
@@ -68,7 +71,7 @@ public class PubSubBasedInternalCommandSenderTest {
         when(commandContext.getCommand()).thenReturn(command);
 
         assertThrows(IllegalArgumentException.class,
-                () -> internalCommandSender.sendCommand(commandContext, adapterInstanceId));
+                () -> internalCommandSender.sendCommand(commandContext, adapterInstanceIdJson));
     }
 
     @Test
@@ -85,7 +88,7 @@ public class PubSubBasedInternalCommandSenderTest {
         when(commandContext.getCommand()).thenReturn(command);
 
         internalCommandSender.start();
-        final Future<Void> result = internalCommandSender.sendCommand(commandContext, adapterInstanceId);
+        final Future<Void> result = internalCommandSender.sendCommand(commandContext, adapterInstanceIdJson);
 
         assertThat(result.succeeded()).isTrue();
         verify(commandContext).accept();

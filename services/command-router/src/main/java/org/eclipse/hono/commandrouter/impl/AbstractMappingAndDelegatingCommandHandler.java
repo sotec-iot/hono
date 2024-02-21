@@ -32,7 +32,6 @@ import org.eclipse.hono.commandrouter.CommandTargetMapper;
 import org.eclipse.hono.service.metric.MetricsTags;
 import org.eclipse.hono.tracing.TenantTraceSamplingHelper;
 import org.eclipse.hono.tracing.TracingHelper;
-import org.eclipse.hono.util.DeviceConnectionConstants;
 import org.eclipse.hono.util.Futures;
 import org.eclipse.hono.util.Lifecycle;
 import org.eclipse.hono.util.MessagingType;
@@ -178,7 +177,8 @@ public abstract class AbstractMappingAndDelegatingCommandHandler<T extends Comma
         final Promise<Void> resultPromise = Promise.promise();
         final long timerId = vertx.setTimer(PROCESSING_TIMEOUT.toMillis(), tid -> {
             if (commandQueue.remove(commandContext) || !commandContext.isCompleted()) {
-                log.info("command processing timed out after {}s [{}]", PROCESSING_TIMEOUT.toSeconds(), commandContext.getCommand());
+                log.info("command processing timed out after {}s [{}]", PROCESSING_TIMEOUT.toSeconds(),
+                        commandContext.getCommand());
                 TracingHelper.logError(commandContext.getTracingSpan(),
                         String.format("command processing timed out after %ds", PROCESSING_TIMEOUT.toSeconds()));
                 final ServerErrorException error = new ServerErrorException(HttpURLConnection.HTTP_UNAVAILABLE,
@@ -241,7 +241,8 @@ public abstract class AbstractMappingAndDelegatingCommandHandler<T extends Comma
                                 HttpURLConnection.HTTP_NOT_FOUND);
                     } else if (cause instanceof DeviceDisabledOrNotRegisteredException) {
                         error = cause;
-                    } else if (ServiceInvocationException.extractStatusCode(cause) == HttpURLConnection.HTTP_NOT_FOUND) {
+                    } else if (ServiceInvocationException
+                            .extractStatusCode(cause) == HttpURLConnection.HTTP_NOT_FOUND) {
                         log.debug("no target adapter instance found for command with device id "
                                 + command.getDeviceId(), cause);
                         error = new NoConsumerException("no target adapter instance found");
@@ -260,22 +261,9 @@ public abstract class AbstractMappingAndDelegatingCommandHandler<T extends Comma
                     return Future.failedFuture(cause);
                 })
                 .compose(result -> {
-                    final String targetAdapterInstanceId = result
-                            .getString(DeviceConnectionConstants.FIELD_ADAPTER_INSTANCE_ID);
-                    final String targetDeviceId = result.getString(DeviceConnectionConstants.FIELD_PAYLOAD_DEVICE_ID);
-                    final String targetGatewayId = targetDeviceId.equals(command.getDeviceId()) ? null : targetDeviceId;
-
-                    if (Objects.isNull(targetGatewayId)) {
-                        log.trace("determined target adapter instance [{}] for [{}] (command not mapped to gateway)",
-                                targetAdapterInstanceId, command);
-                    } else {
-                        command.setGatewayId(targetGatewayId);
-                        log.trace("determined target gateway [{}] and adapter instance [{}] for [{}]",
-                                targetGatewayId, targetAdapterInstanceId, command);
-                        commandContext.getTracingSpan().log("determined target gateway [" + targetGatewayId + "]");
-                    }
+                    log.debug("Will send command action now");
                     return commandQueue.applySendCommandAction(commandContext,
-                            () -> sendCommandInternal(commandContext, targetAdapterInstanceId,
+                            () -> sendCommandInternal(commandContext, result.toString(),
                                     tenantObjectFuture.result(), timer));
                 });
     }

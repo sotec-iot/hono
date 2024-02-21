@@ -82,6 +82,10 @@ public abstract class AbstractCommandContext<T extends Command> extends MapBased
         return command;
     }
 
+    public CommandResponseSender getCommandResponseSender() {
+        return commandResponseSender;
+    }
+
     @Override
     public void accept() {
         if (!setCompleted(OUTCOME_ACCEPTED)) {

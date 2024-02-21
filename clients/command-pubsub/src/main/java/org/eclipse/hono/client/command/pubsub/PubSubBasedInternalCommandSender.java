@@ -13,7 +13,9 @@
 package org.eclipse.hono.client.command.pubsub;
 
 import java.net.HttpURLConnection;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -26,12 +28,15 @@ import org.eclipse.hono.client.pubsub.AbstractPubSubBasedMessageSender;
 import org.eclipse.hono.client.pubsub.PubSubMessageHelper;
 import org.eclipse.hono.client.pubsub.publisher.PubSubPublisherFactory;
 import org.eclipse.hono.util.CommandConstants;
+import org.eclipse.hono.util.DeviceConnectionConstants;
 import org.eclipse.hono.util.MessageHelper;
 
 import io.opentracing.References;
 import io.opentracing.Span;
 import io.opentracing.Tracer;
 import io.vertx.core.Future;
+import io.vertx.core.json.JsonArray;
+import io.vertx.core.json.JsonObject;
 
 /**
  * A Pub/Sub based sender for sending commands to an internal command topic
@@ -70,29 +75,46 @@ public class PubSubBasedInternalCommandSender extends AbstractPubSubBasedMessage
             throw new IllegalArgumentException("command is not an instance of PubSubBasedCommand");
         }
 
-        final Span span = startSpan(
-                CommandConstants.INTERNAL_COMMAND_SPAN_OPERATION_NAME,
-                command.getTenant(),
-                command.getDeviceId(),
-                References.CHILD_OF,
-                commandContext.getTracingContext());
-        final String topic = PubSubMessageHelper.getTopicName(CommandConstants.INTERNAL_COMMAND_ENDPOINT,
-                adapterInstanceId);
+        log.debug("sendCommand: adapterInstanceId: " + adapterInstanceId);
 
-        return sendAndWaitForOutcome(
-                topic,
-                command.getTenant(),
-                command.getDeviceId(),
-                command.getPayload(),
-                getAttributes((PubSubBasedCommand) command),
-                span)
-                        .onSuccess(v -> commandContext.accept())
-                        .onFailure(thr -> commandContext.release(new ServerErrorException(
-                                command.getTenant(),
-                                HttpURLConnection.HTTP_UNAVAILABLE,
-                                "failed to publish command message on internal command topic",
-                                thr)))
-                        .onComplete(ar -> span.finish());
+        final JsonObject instances = new JsonObject(adapterInstanceId);
+        final JsonArray instancesArray = instances
+                .getJsonArray(DeviceConnectionConstants.FIELD_ADAPTER_INSTANCES);
+
+        if (instancesArray == null || instancesArray.isEmpty()) {
+            log.error("could not extract adapter instances");
+            return Future.failedFuture(new ServerErrorException(HttpURLConnection.HTTP_INTERNAL_ERROR));
+        }
+        final List<Future<Void>> futures = new ArrayList<>();
+        log.debug("sendCommand: Found " + instancesArray.size() + " entries in adapter array");
+        for (int i = 0; i < instancesArray.size(); i++) {
+
+            final JsonObject targetAdapterObject = instancesArray.getJsonObject(i);
+            final String targetAdapterInstanceId = targetAdapterObject.getString(DeviceConnectionConstants.FIELD_ADAPTER_INSTANCE_ID);
+
+            final Span span = startSpan(
+                    CommandConstants.INTERNAL_COMMAND_SPAN_OPERATION_NAME,
+                    command.getTenant(),
+                    command.getDeviceId(),
+                    References.CHILD_OF,
+                    commandContext.getTracingContext());
+            final String topic = PubSubMessageHelper.getTopicName(CommandConstants.INTERNAL_COMMAND_ENDPOINT,
+                    targetAdapterInstanceId);
+
+            log.debug("sendCommand: Sending command for device" + command.getDeviceId() + " to adapter instance " + targetAdapterInstanceId);
+            futures.add(sendAndWaitForOutcome(
+                    topic,
+                    command.getTenant(),
+                    command.getDeviceId(),
+                    command.getPayload(),
+                    getAttributes((PubSubBasedCommand) command),
+                    span).onComplete(ar -> span.finish()));
+        }
+        return Future.all(futures).onSuccess(v -> commandContext.accept())
+                .onFailure(thr -> commandContext
+                        .release(new ServerErrorException(command.getTenant(), HttpURLConnection.HTTP_UNAVAILABLE,
+                                "failed to publish command message on internal command topic", thr)))
+                .mapEmpty();
     }
 
     private Map<String, Object> getAttributes(final PubSubBasedCommand command) {

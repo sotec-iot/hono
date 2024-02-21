@@ -71,7 +71,7 @@ public class CacheBasedDeviceConnectionInfoTest {
 
     private static final String PARAMETERIZED_TEST_NAME_PATTERN = "{displayName} [{index}]; parameters: {argumentsWithNames}";
 
-    private DeviceConnectionInfo info;
+    private CacheBasedDeviceConnectionInfo info;
     private Tracer tracer;
     private Span span;
     private Cache<String, String> cache;
@@ -774,6 +774,8 @@ public class CacheBasedDeviceConnectionInfoTest {
         // GIVEN testDevice has no last known gateway registered
         when(cache.get(CacheBasedDeviceConnectionInfo.getGatewayEntryKey(Constants.DEFAULT_TENANT, deviceId)))
                 .thenReturn(Future.succeededFuture());
+        when(cache.get(CacheBasedDeviceConnectionInfo.getAdapterInstanceEntryKey(Constants.DEFAULT_TENANT, deviceId)))
+                .thenReturn(Future.succeededFuture(adapterInstance));
 
         // and testDevice's and gw-1's command handling adapter instances are set to
         // adapterInstance and otherAdapterInstance respectively
@@ -1004,7 +1006,29 @@ public class CacheBasedDeviceConnectionInfoTest {
     }
 
     /**
-     * Asserts the the given result JSON of the <em>getCommandHandlingAdapterInstances</em> method contains
+     * Verifies that removeAdapterInstanceFromCacheEntry calls the correct cache operations.
+     *
+     * @param ctx The vert.x context.
+     */
+    @Test
+    public void testRemoveAdapterInstanceFromCacheEntry( final VertxTestContext ctx) {
+        final String adapters = "345;123";
+        final String adapter = "345";
+        when(cache.remove(any(), any()))
+                .thenReturn(Future.succeededFuture(true));
+        when(cache.put(anyString(), anyString(), anyLong(), any(TimeUnit.class))).thenReturn(Future.succeededFuture());
+        info.removeAdapterInstanceFromCacheEntry(adapters, adapter, "tenant", "device", span)
+                .onComplete(ctx.succeeding(result -> {
+                    ctx.verify(() -> {
+                        verify(cache).put("ai@@tenant@@device", "123", -1L, TimeUnit.MILLISECONDS);
+                    });
+                    ctx.completeNow();
+                }));
+    }
+
+
+    /**
+     * Asserts the given result JSON of the <em>getCommandHandlingAdapterInstances</em> method contains
      * an "adapter-instances" entry with the given device id and adapter instance id.
      */
     private void assertGetInstancesResultMapping(final JsonObject resultJson, final String deviceId, final String adapterInstanceId) {

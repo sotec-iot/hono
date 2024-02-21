@@ -140,7 +140,7 @@ public class CommandTargetMapperImpl implements CommandTargetMapper {
         LOG.debug(infoMsg);
         span.log(infoMsg);
         TracingHelper.TAG_ADAPTER_INSTANCE_ID.set(span, targetAdapterInstance);
-        return Future.succeededFuture(targetInstanceObject);
+        return Future.succeededFuture(adapterInstancesJson);
     }
 
     private Future<JsonObject> createAndLogInternalServerErrorFuture(final Span span, final String errorMessage) {
